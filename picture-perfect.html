@@ -1,0 +1,427 @@
+<html lang="en">
+    <head>
+        <title>Picture Perfect</title>
+        <style>
+          html {
+            display:  flex;
+            width:    100%;
+            height:   100%;
+            overflow: auto;
+          }
+
+          body {
+            display:  flex;
+            flex:     1 1 auto;
+            overflow: auto;
+            margin:   10px;
+            padding:  0;
+          }
+
+          #control {
+            display:   flex;
+            flex-flow: column;
+          }
+
+          #preview {
+            display:         flex;
+            flex:            1 1 auto;
+            flex-flow:       column;
+            justify-content: center;
+            align-items:     center;
+          }
+
+          #canvas {
+            border: 2px solid black;
+          }
+
+          .hidden {
+            display: none;
+          }
+        </style>
+
+    </head>
+    <body>
+        <div id="control">
+
+            <button id="file_button">
+                <label>Choose an image
+                    <input type="file" id="file_browse" class="hidden">
+                </label>
+            </button>
+            <label>
+                <span>URL to image</span>
+                <input id="file_input">
+            </label>
+            <label>
+                <span>Font size</span>
+                <input id="font-size" type="number" min="10" max="30">
+            </label>
+            <label>
+                <span>Width</span>
+                <input id="width" type="number" min="300">
+            </label>
+            <label>
+                <span>Height</span>
+                <input id="height" type="number" min="300">
+            </label>
+            <label>
+                <span>Columns</span>
+                <input id="column" type="number" min="1">
+            </label>
+            <label>
+                <span>Rows</span>
+                <input id="row" type="number" min="1">
+            </label>
+            <div>
+                <button id="generate" disabled>Generate grid</button>
+                <button id="start" disabled>Start</button>
+                <button id="stop" class="hidden">Stop</button>
+            </div>
+        </div>
+        <div id="preview">
+            <canvas id="canvas"></canvas>
+            <i id="natural_dimension"></i>
+        </div>
+        <script>
+          const element_canvas      = document.getElementById("canvas");
+          const element_file_button = document.getElementById("file_button");
+          const element_file_input  = document.getElementById("file_input");
+          const element_file_browse = document.getElementById("file_browse");
+          const element_font_size   = document.getElementById("font-size");
+          const element_width       = document.getElementById("width");
+          const element_height      = document.getElementById("height");
+          const element_row         = document.getElementById("row");
+          const element_column      = document.getElementById("column");
+          const element_generate    = document.getElementById("generate");
+          const element_start       = document.getElementById("start");
+          const element_stop        = document.getElementById("stop");
+          const ctx                 = element_canvas.getContext("2d");
+
+          let source               = "";
+          let running              = false;
+          let font_size            = 16;
+          let width                = 600;
+          let height               = 600;
+          let natural_width        = 0;
+          let natural_height       = 0;
+          let quadrilateral_column = 4;
+          let quadrilateral_row    = 4;
+          let quadrilateral_list   = [];
+
+          window.onload = () => {
+            element_file_input.value = source;
+            element_font_size.value  = font_size;
+            element_width.value      = width;
+            element_height.value     = height;
+            element_row.value        = quadrilateral_column + 1;
+            element_column.value     = quadrilateral_row + 1;
+
+
+            element_canvas.addEventListener("click", handleCanvasClick);
+            element_file_input.addEventListener("change", handleFileInputChange);
+            element_file_browse.addEventListener("change", handleFileBrowseChange);
+
+            element_font_size.addEventListener("change", handleFontSizeChange);
+            element_width.addEventListener("change", handleSizeChange);
+            element_height.addEventListener("change", handleSizeChange);
+
+            element_row.addEventListener("change", handleGridChange);
+            element_column.addEventListener("change", handleGridChange);
+
+            element_generate.addEventListener("click", handleGenerate);
+            element_start.addEventListener("click", handleStart);
+            element_stop.addEventListener("click", handleStop);
+
+            window.addEventListener("keydown", handleKeyDown);
+
+            updateCanvasSize();
+          };
+
+          function handleKeyDown(event) {
+            let code = event.code;
+            if (event.code !== "ControlLeft" && event.code !== "ControlRight" && event.ctrlKey) code = "CTRL+" + code;
+            if (event.code !== "ShiftLeft" && event.code !== "ShiftRight" && event.shiftKey) code = "SHIFT+" + code;
+            if (event.code !== "AltLeft" && event.code !== "AltRight" && event.altKey) code = "ALT+" + code;
+
+            if (code === "CTRL+KeyC" && running) {
+              event.preventDefault();
+              element_canvas.toBlob(blob => navigator.clipboard.write([new ClipboardItem({"image/png": blob})]));
+            }
+          }
+
+          async function handleCanvasClick(event) {
+            if (!running) return;
+            const rect = event.target.getBoundingClientRect();
+            const x    = event.pageX - rect.x - event.target.clientLeft;
+            const y    = event.pageY - rect.y - event.target.clientTop;
+            if (x < 0 || y < 0 || x > event.target.scrollWidth || y > event.target.scrollHeight) return;
+
+            for (let i = 0; i < quadrilateral_list.length; i++) {
+              const quadrilateral = quadrilateral_list.at(i);
+              if (!quadrilateral || quadrilateral.checked || !inQuadrilateral({x, y}, quadrilateral)) continue;
+              quadrilateral.checked = true;
+              await drawImage();
+              drawQuadrilateralGrid();
+              return;
+            }
+          }
+
+          function handleFontSizeChange() {
+            font_size = element_font_size.value;
+            if (quadrilateral_list.length) handleGenerate();
+          }
+
+          function handleFileInputChange(event) {
+            source = event.target.value;
+            drawImage();
+            element_start.setAttribute("disabled", "");
+            element_generate.removeAttribute("disabled");
+          }
+
+          function handleFileBrowseChange(event) {
+            const file = event.target.files[0];
+            if (file?.type?.split("/")[0] !== "image") {
+              throw new Error("Cannot render non-image");
+            }
+
+            const reader = new FileReader();
+            reader.readAsDataURL(file);
+            reader.onloadend = () => {
+              source                    = reader.result.toString();
+              element_file_browse.value = "";
+
+              drawImage();
+              element_start.setAttribute("disabled", "");
+              element_generate.removeAttribute("disabled");
+            };
+          }
+
+          function drawImage() {
+            const image = new Image();
+            image.src   = source;
+            return new Promise((resolve, reject) => {
+              image.onload  = () => {
+                const natural_dimension = document.getElementById("natural_dimension");
+                natural_width           = image.width;
+                natural_height          = image.height;
+                if (natural_dimension) natural_dimension.innerText = `Natural dimension: ${natural_width}x${natural_height}`;
+                ctx.drawImage(image, 0, 0, width, height);
+                resolve();
+              };
+              image.onerror = reject;
+            });
+
+          }
+
+          function handleSizeChange() {
+            width                       = element_width.value;
+            height                      = element_height.value;
+            element_canvas.width        = width;
+            element_canvas.height       = height;
+            element_canvas.style.width  = `${width}px`;
+            element_canvas.style.height = `${height}px`;
+          }
+
+          function handleGridChange() {
+            quadrilateral_column = +element_column.value - 1;
+            quadrilateral_row    = +element_row.value - 1;
+            if (quadrilateral_list.length) handleGenerate();
+          }
+
+          function handleGenerate() {
+            generateQuadrilateralList();
+            drawQuadrilateralGrid();
+            element_start.removeAttribute("disabled");
+          }
+
+          function handleStart() {
+            running = true;
+            element_file_input.setAttribute("disabled", "");
+            element_file_button.setAttribute("disabled", "");
+            element_file_browse.setAttribute("disabled", "");
+            element_font_size.setAttribute("disabled", "");
+            element_width.setAttribute("disabled", "");
+            element_height.setAttribute("disabled", "");
+            element_row.setAttribute("disabled", "");
+            element_column.setAttribute("disabled", "");
+            element_generate.setAttribute("disabled", "");
+            element_start.classList.add("hidden");
+            element_stop.classList.remove("hidden");
+          }
+
+          function handleStop() {
+            running = false;
+            element_file_input.removeAttribute("disabled");
+            element_file_button.removeAttribute("disabled");
+            element_file_browse.removeAttribute("disabled");
+            element_font_size.removeAttribute("disabled");
+            element_width.removeAttribute("disabled");
+            element_height.removeAttribute("disabled");
+            element_row.removeAttribute("disabled");
+            element_column.removeAttribute("disabled");
+            element_generate.removeAttribute("disabled");
+            element_stop.classList.add("hidden");
+            element_start.classList.remove("hidden");
+          }
+
+          function generateQuadrilateralList() {
+            quadrilateral_list.length  = 0;
+            const width_fraction       = width / (quadrilateral_column + 1);
+            const height_fraction      = height / (quadrilateral_row + 1);
+            const vertical_line_list   = [];
+            const horizontal_line_list = [];
+
+            vertical_line_list.push({x1: 0, y1: 0, x2: 0, y2: height, formula: getLine(0, 0, 0, height)});
+            horizontal_line_list.push({x1: 0, y1: 0, x2: width, y2: 0, formula: getLine(0, width, 0, 0)});
+
+            for (let i = 0; i < quadrilateral_column; i++) {
+              const x1 = getLinePoint(width_fraction, i);
+              const x2 = getLinePoint(width_fraction, i);
+              vertical_line_list.push({x1, y1: 0, x2, y2: height, formula: getLine(x1, x2, 0, height)});
+            }
+
+            for (let i = 0; i < quadrilateral_row; i++) {
+              const y1 = getLinePoint(height_fraction, i);
+              const y2 = getLinePoint(height_fraction, i);
+              horizontal_line_list.push({x1: 0, y1, x2: width, y2, formula: getLine(0, width, y1, y2)});
+            }
+            vertical_line_list.push({x1: width, y1: 0, x2: width, y2: height, formula: getLine(width, width, 0, height)});
+            horizontal_line_list.push({x1: 0, y1: height, x2: width, y2: height, formula: getLine(0, width, height, height)});
+
+            for (let j = 0; j < horizontal_line_list.length - 1; j++) {
+              for (let i = 0; i < vertical_line_list.length - 1; i++) {
+                const lv1  = vertical_line_list.at(i).formula;
+                const lv2  = vertical_line_list.at(i + 1).formula;
+                const lh1  = horizontal_line_list.at(j).formula;
+                const lh2  = horizontal_line_list.at(j + 1).formula;
+                const quad = generateQuadrilateral(lv1, lv2, lh1, lh2);
+                quadrilateral_list.push(quad);
+              }
+            }
+          }
+
+          function generateQuadrilateral(lv1, lv2, lh1, lh2) {
+            const top_left     = getIntersection(lh1, lv1);
+            const top_right    = getIntersection(lh1, lv2);
+            const bottom_left  = getIntersection(lh2, lv1);
+            const bottom_right = getIntersection(lh2, lv2);
+
+            const mid_top_x    = (top_right.x + top_left.x) / 2;
+            const mid_top_y    = -(lh1.a * mid_top_x + lh1.c) / lh1.b;
+            const mid_bottom_x = (bottom_right.x + bottom_left.x) / 2;
+            const mid_bottom_y = -(lh2.a * mid_top_x + lh2.c) / lh2.b;
+            const x_line       = getLine(mid_top_x, mid_bottom_x, mid_top_y, mid_bottom_y);
+
+            const mid_left_y  = (top_left.y + bottom_left.y) / 2;
+            const mid_left_x  = -(lv1.b * mid_left_y + lv1.c) / lv1.a;
+            const mid_right_y = (top_right.y + bottom_right.y) / 2;
+            const mid_right_x = -(lv2.b * mid_right_y + lv2.c) / lv2.a;
+            const y_line      = getLine(mid_left_x, mid_right_x, mid_left_y, mid_right_y);
+            const center      = getIntersection(x_line, y_line);
+
+            return {top_left, top_right, bottom_left, bottom_right, center, checked: false};
+          }
+
+          function drawQuadrilateralGrid() {
+            let counter = 1;
+            for (let i = 0; i < quadrilateral_list.length; i++) {
+              const {top_left, top_right, bottom_left, bottom_right, center, checked} = quadrilateral_list.at(i);
+              if (checked) continue;
+              ctx.beginPath();
+              ctx.moveTo(top_left.x - 0.5, top_left.y - 0.5);
+              ctx.lineTo(top_right.x + 0.5, top_right.y - 0.5);
+              ctx.lineTo(bottom_right.x + 0.5, bottom_right.y + 0.5);
+              ctx.lineTo(bottom_left.x - 0.5, bottom_left.y + 0.5);
+              ctx.closePath();
+              ctx.fillStyle = getColor(i % 5);
+              ctx.fill();
+
+              ctx.font         = `${font_size}px Arial`;
+              ctx.textBaseline = "middle";
+              ctx.textAlign    = "center";
+              ctx.fillStyle    = "black";
+              ctx.fillText(String(counter++), center.x, center.y);
+            }
+          }
+
+          function updateCanvasSize() {
+            const element        = document.getElementById("canvas");
+            const width_element  = document.getElementById("width");
+            const height_element = document.getElementById("height");
+            const width          = +width_element?.value || 600;
+            const height         = +height_element?.value || 600;
+
+            element.width        = width_element.value = width;
+            element.height       = height_element.value = height;
+            element.style.width  = `${width}px`;
+            element.style.height = `${height}px`;
+          }
+
+          function inQuadrilateral(point, {top_left, top_right, bottom_left, bottom_right}) {
+            const diagonal_length = getLength(bottom_right, top_left);
+            const top_length      = getLength(top_right, top_left);
+            const left_length     = getLength(bottom_left, top_left);
+            const right_length    = getLength(bottom_right, top_right);
+            const bottom_length   = getLength(bottom_right, bottom_left);
+
+            const t_height_1      = getTriangleHeight(bottom_length, diagonal_length, left_length);
+            const t_height_2      = getTriangleHeight(top_length, diagonal_length, right_length);
+
+            const area            = 0.5 * diagonal_length * (t_height_1 + t_height_2);
+
+            const t_area_1        = getTriangleArea(point, top_left, top_right);
+            const t_area_2        = getTriangleArea(point, top_right, bottom_right);
+            const t_area_3        = getTriangleArea(point, bottom_right, bottom_left);
+            const t_area_4        = getTriangleArea(point, bottom_left, top_left);
+
+            return Math.round(area) === Math.round(t_area_1 + t_area_2 + t_area_3 + t_area_4);
+          }
+
+          function getTriangleArea(p1, p2, p3) {
+            const a = getLength(p1, p2);
+            const b = getLength(p1, p3);
+            const c = getLength(p2, p3);
+            const p = (a + b + c) / 2;
+            return Math.sqrt(p * (p - a) * (p - b) * (p - c));
+          }
+
+          function getLength(p1, p2) {
+            return Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
+          }
+
+          function getTriangleHeight(a, b, c) {
+            const p1 = a + b + c;
+            const p2 = -a + b + c;
+            const p3 = a - b + c;
+            const p4 = a + b - c;
+            return 0.5 * Math.sqrt(p1 * p2 * p3 * p4) / b;
+          }
+
+          function getLinePoint(frac, i) {
+            return Math.floor(Math.random() * frac + 1) + (i + 0.5) * frac;
+          }
+
+          function getColor(i) {
+            if (i === 0) return "blue";
+            if (i === 1) return "red";
+            if (i === 2) return "green";
+            if (i === 3) return "yellow";
+            if (i === 4) return "orange";
+            if (i === 5) return "magenta";
+            if (i === 6) return "purple";
+          }
+
+          function getLine(x1, x2, y1, y2) {
+            const a = y1 - y2;
+            const b = x2 - x1;
+            const c = x1 * y2 - x2 * y1;
+            return {a, b, c};
+          }
+
+          function getIntersection(l1, l2) {
+            const determinant = l1.a * l2.b - l2.a * l1.b;
+            return {x: -(l2.b * l1.c - l1.b * l2.c) / determinant, y: -(l1.a * l2.c - l2.a * l1.c) / determinant};
+          }
+        </script>
+    </body>
+</html>
